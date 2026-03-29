@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Get, UseGuards } from '@nestjs/common';
+import { Controller, Post, Body, Get, UseGuards, Req } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { CreateUserDto } from "./dto/createUser.dto";
 import { LoginUserDto } from "./dto/loginUser.dto";
@@ -7,6 +7,7 @@ import { Public } from './public.decorator';
 import { User } from "./user.decorator";
 import { UserService } from "../user/user.service";
 import type { JwtPayload } from "../../types/jwt-payload.type";
+import * as express from 'express';
 
 @UseGuards(AuthGuard) // ✅ Apply guard to all routes
 @Controller('auth')
@@ -60,5 +61,17 @@ export class AuthController {
     @Post('change-password')
     async changePassword(@User() user: JwtPayload, @Body() body: any) {
         return this.authService.changePassword(Number(user.sub), body);
+    }
+
+    @Post('logout')
+    async logout(@Req() request: express.Request, @User() user: JwtPayload) {
+        const token = request['token']; // Retrieved from AuthGuard
+        return this.authService.logout(Number(user.sub), token);
+    }
+
+    @Public()
+    @Post('refresh')
+    async refresh(@Body('refresh_token') refreshToken: string) {
+        return this.authService.refreshTokens(refreshToken);
     }
 }

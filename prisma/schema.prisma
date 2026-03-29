@@ -30,10 +30,17 @@ model EmailOtp {
 }
 
 model User {
-  id       Int     @id @default(autoincrement())
-  email    String  @unique
-  isVerified Boolean @default(false)
-  password String
-  username String? @unique
-  role Role? @default(STUDENT)
+  id           Int     @id @default(autoincrement())
+  email        String  @unique
+  isVerified   Boolean @default(false)
+  password     String
+  username     String? @unique
+  role         Role?   @default(STUDENT)
+  refreshToken String?
+}
+
+model BlacklistedToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  createdAt DateTime @default(now())
 }

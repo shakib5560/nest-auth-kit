@@ -74,23 +74,58 @@ export class AuthService {
 
     async login(loginUserDto: LoginUserDto) {
         try {
-            const user = await this.userService.loginUser(loginUserDto);
+            const userResponse = await this.userService.loginUser(loginUserDto);
+            const user = userResponse.user;
 
-            const payload = {
-                sub: user.user.id,
-                role: user.user.role
-            }
-            const access_token = await this.jwtService.signAsync(payload);
+            const tokens = await this.getTokens(user.id, user.role || 'STUDENT');
+            await this.updateRefreshToken(user.id, tokens.refresh_token);
 
             return {
                 message: 'User login successfully',
-                user,
-                access_token: access_token,
-            }
-        } catch (error){
+                user: userResponse.user,
+                ...tokens,
+            };
+        } catch (error) {
             throw new InternalServerErrorException(
                 error.message || 'Something went wrong',
-            )
+            );
+        }
+    }
+
+    async refreshTokens(refreshToken: string) {
+        if (!refreshToken) {
+            throw new BadRequestException('Refresh token is required');
+        }
+
+        try {
+            const payload = await this.jwtService.verifyAsync(refreshToken, {
+                secret: process.env.JWT_SECRET,
+            });
+
+            const userId = Number(payload.sub);
+            const user = await this.prisma.user.findUnique({
+                where: { id: userId },
+            });
+
+            if (!user || !user.refreshToken) {
+                throw new UnauthorizedException('Access Denied');
+            }
+
+            const refreshTokenMatches = await bcrypt.compare(
+                refreshToken,
+                user.refreshToken,
+            );
+
+            if (!refreshTokenMatches) {
+                throw new UnauthorizedException('Access Denied');
+            }
+
+            const tokens = await this.getTokens(user.id, user.role || 'STUDENT');
+            await this.updateRefreshToken(user.id, tokens.refresh_token);
+
+            return tokens;
+        } catch (e) {
+            throw new UnauthorizedException('Invalid refresh token');
         }
     }
 
@@ -216,7 +251,50 @@ export class AuthService {
         return { message: 'Password has been changed successfully' };
     }
 
-    // ✅ Helper method
+    async logout(userId: number, token: string) {
+        // Blacklist Access Token
+        if (token) {
+            await this.prisma.blacklistedToken.create({
+                data: { token },
+            }).catch(() => {}); // Ignore if already blacklisted
+        }
+
+        // Remove Refresh Token from User
+        await this.prisma.user.update({
+            where: { id: userId },
+            data: { refreshToken: null },
+        });
+
+        return { message: 'Logged out successfully' };
+    }
+
+    // ✅ Helper methods
+    private async getTokens(userId: number, role: string) {
+        const [at, rt] = await Promise.all([
+            this.jwtService.signAsync(
+                { sub: userId, role },
+                { secret: process.env.JWT_SECRET, expiresIn: '1h' },
+            ),
+            this.jwtService.signAsync(
+                { sub: userId, role },
+                { secret: process.env.JWT_SECRET, expiresIn: '30d' },
+            ),
+        ]);
+
+        return {
+            access_token: at,
+            refresh_token: rt,
+        };
+    }
+
+    private async updateRefreshToken(userId: number, refreshToken: string) {
+        const hashedRefreshToken = await bcrypt.hash(refreshToken, 10);
+        await this.prisma.user.update({
+            where: { id: userId },
+            data: { refreshToken: hashedRefreshToken },
+        });
+    }
+
     private isValidEmail(email: string): boolean {
         return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
     }

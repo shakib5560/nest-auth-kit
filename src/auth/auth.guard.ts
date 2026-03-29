@@ -8,12 +8,14 @@ import { JwtService } from '@nestjs/jwt';
 import { Request } from 'express';
 import { Reflector } from '@nestjs/core';
 import { IS_PUBLIC_KEY } from './public.decorator';
+import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class AuthGuard implements CanActivate {
     constructor(
         private jwtService: JwtService,
-        private reflector: Reflector
+        private reflector: Reflector,
+        private prisma: PrismaService,
     ) {}
 
     async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -33,12 +35,22 @@ export class AuthGuard implements CanActivate {
             throw new UnauthorizedException('Token not found');
         }
 
+        // Check if token is blacklisted
+        const isBlacklisted = await this.prisma.blacklistedToken.findUnique({
+            where: { token },
+        });
+
+        if (isBlacklisted) {
+            throw new UnauthorizedException('Token is invalidated (logged out)');
+        }
+
         try {
             const payload = await this.jwtService.verifyAsync(token, {
                 secret: process.env.JWT_SECRET,
             });
 
             request['user'] = payload;
+            request['token'] = token; // Store token for logout
         } catch (err) {
             throw new UnauthorizedException('Invalid token');
         }
