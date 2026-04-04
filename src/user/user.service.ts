@@ -9,6 +9,7 @@ import { CreateUserDto } from "../auth/dto/createUser.dto";
 import { PrismaService } from "../prisma/prisma.service";
 import * as bcrypt from 'bcrypt';
 import { LoginUserDto } from "../auth/dto/loginUser.dto";
+import {Role} from "../common/enum/auth.enum";
 
 @Injectable()
 export class UserService {
@@ -40,6 +41,24 @@ export class UserService {
                     role: true,
                 },
             });
+
+            if (createUserDto.role === Role.ADMIN) {
+                await this.prisma.adminProfile.create({
+                    data: { userId: user.id },
+                });
+            }
+
+            if (createUserDto.role === Role.STUDENT) {
+                await this.prisma.studentProfile.create({
+                    data: { userId: user.id },
+                });
+            }
+
+            if (createUserDto.role === Role.TEACHER) {
+                await this.prisma.teacherProfile.create({
+                    data: { userId: user.id },
+                });
+            }
 
             return {
                 message: "User created successfully",
@@ -113,7 +132,7 @@ export class UserService {
     /* ====================================================
        GET USER BY ID
     ==================================================== */
-    async getUserById(userId: number) {
+    async getUserById(userId: any) {
         const user = await this.prisma.user.findUnique({
             where: { id: userId },
             select: {

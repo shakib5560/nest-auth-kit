@@ -3,23 +3,24 @@ import {
     BadRequestException,
     InternalServerErrorException,
     NotFoundException,
-    UnauthorizedException
+    UnauthorizedException,
+    HttpException,
 } from '@nestjs/common';
 import { CreateUserDto } from './dto/createUser.dto';
 import { UserService } from '../user/user.service';
 import * as bcrypt from 'bcrypt';
 import { JwtService } from '@nestjs/jwt';
 import { LoginUserDto } from './dto/loginUser.dto';
-import { MailService } from '../mail/mail.service';
+import { OtpService } from './otp.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { OtpPurpose } from '@prisma/client';
+import { OtpPurpose, Role } from '@prisma/client';
 
 @Injectable()
 export class AuthService {
     constructor(
         private readonly userService: UserService,
         private readonly jwtService: JwtService,
-        private readonly mailService: MailService,
+        private readonly otpService: OtpService,
         private readonly prisma: PrismaService,
     ) {}
 
@@ -27,7 +28,6 @@ export class AuthService {
         try {
             const { email, password, username } = createUserDto;
 
-            // ✅ Proper validation
             if (!email || !password) {
                 throw new BadRequestException('Email and password are required');
             }
@@ -36,39 +36,25 @@ export class AuthService {
                 throw new BadRequestException('Invalid email format');
             }
 
-            // ✅ Normalize username
             const normalizedUsername = username?.toLowerCase();
 
-            // ✅ Create user
             const userResponse = await this.userService.createUser({
                 ...createUserDto,
                 username: normalizedUsername,
             });
 
-            // ✅ Generate OTP and send email
-            const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
-            const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
-
-            await this.prisma.emailOtp.create({
-                data: {
-                    email: userResponse.user.email,
-                    otp: otpCode,
-                    purpose: OtpPurpose.VERIFICATION,
-                    expiresAt,
-                }
-            });
-
-            await this.mailService.sendVerificationOtp(userResponse.user.email, otpCode);
+            await this.otpService.generateAndSendOtp(userResponse.user.email, OtpPurpose.VERIFICATION);
 
             return {
                 message: 'User created successfully. Please check your email for the verification OTP.',
                 user: userResponse.user,
             };
         } catch (error) {
+            if (error instanceof HttpException) {
+                throw error;
+            }
             console.error('Prisma Error:', error);
-            throw new InternalServerErrorException(
-                error.message || 'Something went wrong',
-            );
+            throw new InternalServerErrorException('Something went wrong');
         }
     }
 
@@ -77,7 +63,7 @@ export class AuthService {
             const userResponse = await this.userService.loginUser(loginUserDto);
             const user = userResponse.user;
 
-            const tokens = await this.getTokens(user.id, user.role || 'STUDENT');
+            const tokens = await this.getTokens(user.id, user.role || Role.STUDENT);
             await this.updateRefreshToken(user.id, tokens.refresh_token);
 
             return {
@@ -86,9 +72,8 @@ export class AuthService {
                 ...tokens,
             };
         } catch (error) {
-            throw new InternalServerErrorException(
-                error.message || 'Something went wrong',
-            );
+            if (error instanceof HttpException) throw error;
+            throw new InternalServerErrorException('Something went wrong');
         }
     }
 
@@ -102,7 +87,7 @@ export class AuthService {
                 secret: process.env.JWT_SECRET,
             });
 
-            const userId = Number(payload.sub);
+            const userId = String(payload.sub);
             const user = await this.prisma.user.findUnique({
                 where: { id: userId },
             });
@@ -120,7 +105,7 @@ export class AuthService {
                 throw new UnauthorizedException('Access Denied');
             }
 
-            const tokens = await this.getTokens(user.id, user.role || 'STUDENT');
+            const tokens = await this.getTokens(user.id, user.role || Role.STUDENT);
             await this.updateRefreshToken(user.id, tokens.refresh_token);
 
             return tokens;
@@ -134,32 +119,11 @@ export class AuthService {
             throw new BadRequestException('Email and OTP are required');
         }
 
-        const otpRecord = await this.prisma.emailOtp.findFirst({
-            where: {
-                email: email.toLowerCase(),
-                otp,
-                purpose: OtpPurpose.VERIFICATION,
-            },
-            orderBy: { createdAt: 'desc' },
-        });
+        await this.otpService.verifyOtp(email, otp, OtpPurpose.VERIFICATION);
 
-        if (!otpRecord) {
-            throw new BadRequestException('Invalid OTP');
-        }
-
-        if (otpRecord.expiresAt < new Date()) {
-            throw new BadRequestException('OTP has expired');
-        }
-
-        // OTP is valid, update user
         await this.prisma.user.update({
             where: { email: email.toLowerCase() },
             data: { isVerified: true },
-        });
-
-        // Optional: Delete all verification OTPs for this user
-        await this.prisma.emailOtp.deleteMany({
-            where: { email: email.toLowerCase(), purpose: OtpPurpose.VERIFICATION },
         });
 
         return { message: 'Email verified successfully' };
@@ -176,19 +140,7 @@ export class AuthService {
             return { message: 'If an account exists, a password reset email has been sent.' };
         }
 
-        const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
-        const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
-
-        await this.prisma.emailOtp.create({
-            data: {
-                email: normalizedEmail,
-                otp: otpCode,
-                purpose: OtpPurpose.RESET_PASSWORD,
-                expiresAt,
-            }
-        });
-
-        await this.mailService.sendPasswordResetOtp(normalizedEmail, otpCode);
+        await this.otpService.generateAndSendOtp(normalizedEmail, OtpPurpose.RESET_PASSWORD);
 
         return { message: 'If an account exists, a password reset email has been sent.' };
     }
@@ -200,18 +152,7 @@ export class AuthService {
         }
 
         const normalizedEmail = email.toLowerCase();
-        const otpRecord = await this.prisma.emailOtp.findFirst({
-            where: {
-                email: normalizedEmail,
-                otp,
-                purpose: OtpPurpose.RESET_PASSWORD,
-            },
-            orderBy: { createdAt: 'desc' },
-        });
-
-        if (!otpRecord || otpRecord.expiresAt < new Date()) {
-            throw new BadRequestException('Invalid or expired OTP');
-        }
+        await this.otpService.verifyOtp(email, otp, OtpPurpose.RESET_PASSWORD);
 
         const hashedPassword = await bcrypt.hash(newPassword, 10);
         await this.prisma.user.update({
@@ -219,14 +160,10 @@ export class AuthService {
             data: { password: hashedPassword },
         });
 
-        await this.prisma.emailOtp.deleteMany({
-            where: { email: normalizedEmail, purpose: OtpPurpose.RESET_PASSWORD },
-        });
-
         return { message: 'Password has been reset successfully' };
     }
 
-    async changePassword(userId: number, body: any) {
+    async changePassword(userId: string, body: any) {
         const { oldPassword, newPassword } = body;
         if (!oldPassword || !newPassword) {
             throw new BadRequestException('oldPassword and newPassword are required');
@@ -251,7 +188,7 @@ export class AuthService {
         return { message: 'Password has been changed successfully' };
     }
 
-    async logout(userId: number, token: string) {
+    async logout(userId: string, token: string) {
         // Blacklist Access Token
         if (token) {
             await this.prisma.blacklistedToken.create({
@@ -269,7 +206,7 @@ export class AuthService {
     }
 
     // ✅ Helper methods
-    private async getTokens(userId: number, role: string) {
+    private async getTokens(userId: string, role: Role) {
         const [at, rt] = await Promise.all([
             this.jwtService.signAsync(
                 { sub: userId, role },
@@ -287,7 +224,7 @@ export class AuthService {
         };
     }
 
-    private async updateRefreshToken(userId: number, refreshToken: string) {
+    private async updateRefreshToken(userId: string, refreshToken: string) {
         const hashedRefreshToken = await bcrypt.hash(refreshToken, 10);
         await this.prisma.user.update({
             where: { id: userId },

@@ -7,8 +7,8 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { Request } from 'express';
 import { Reflector } from '@nestjs/core';
-import { IS_PUBLIC_KEY } from './public.decorator';
-import { PrismaService } from '../prisma/prisma.service';
+import { IS_PUBLIC_KEY } from '../decorator/public.decorator';
+import { PrismaService } from '../../prisma/prisma.service';
 
 @Injectable()
 export class AuthGuard implements CanActivate {
@@ -29,7 +29,7 @@ export class AuthGuard implements CanActivate {
         }
 
         const request = context.switchToHttp().getRequest<Request>();
-        const token = this.extractTokenFromHeader(request);
+        const token = this.extractToken(request);
 
         if (!token) {
             throw new UnauthorizedException('Token not found');
@@ -58,7 +58,11 @@ export class AuthGuard implements CanActivate {
         return true;
     }
 
-    private extractTokenFromHeader(request: Request): string | undefined {
+    private extractToken(request: Request): string | undefined {
+        if (request.cookies && request.cookies.access_token) {
+            return request.cookies.access_token;
+        }
+
         const [type, token] =
         request.headers.authorization?.split(' ') ?? [];
 

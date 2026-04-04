@@ -4,6 +4,9 @@ import { AppModule } from './app.module';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import compression from 'compression';
+import cookieParser from 'cookie-parser';
+import { Reflector } from '@nestjs/core';
+import {RolesGuard} from "./common/guard/roles.guard";
 
 async function bootstrap() {
     const logger = new Logger('Bootstrap');
@@ -19,9 +22,11 @@ async function bootstrap() {
     // -------------------------------
     app.use(helmet());             // Secure HTTP headers
     app.use(compression());        // Response compression
+    app.use(cookieParser());       // Parse cookies
     app.enableCors({               // Enable CORS
-        origin: ['https://yourdomain.com'], // Replace with your allowed domains
+        origin: ['http://localhost:3000'], // Replace with your allowed domains
         methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
+        credentials: true,
     });
 
     // -------------------------------
@@ -33,6 +38,12 @@ async function bootstrap() {
             transform: true,             // Auto-transform payloads to DTO instances
             forbidNonWhitelisted: true,  // Throw error on unknown properties
         }),
+    );
+
+    const reflector = app.get(Reflector);
+
+    app.useGlobalGuards(
+        new RolesGuard(reflector),
     );
 
     // -------------------------------
